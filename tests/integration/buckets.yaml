@@ -1,0 +1,51 @@
+# Buckets created by the live tests. Rendered with config_vars:
+#   project_id, service_agent and prefix (the name_prefix of the test run).
+defaults:
+  location: US-CENTRAL1
+  # Test buckets are thrown away at the end of the run.
+  force_destroy: true
+  deletion_policy: DELETE
+  labels:
+    purpose: terraform-module-test
+
+buckets:
+  - name: standard
+    versioning: true
+    soft_delete_retention_seconds: 0
+    labels:
+      tier: standard
+    lifecycle_rules:
+      - action: {type: Delete}
+        condition: {age: 0, matches_prefix: [tmp/]}
+      - action: {type: SetStorageClass, storage_class: NEARLINE}
+        condition: {age: 30, matches_storage_class: [STANDARD]}
+      - action: {type: AbortIncompleteMultipartUpload}
+        condition: {age: 1}
+    cors:
+      - origin: ["https://example.com"]
+        method: [GET]
+        max_age_seconds: 600
+    iam:
+      - role: roles/storage.objectViewer
+        members: [projectViewer:${project_id}]
+      - role: roles/storage.objectCreator
+        service_accounts: [${service_agent}]
+        condition:
+          title: tmp-prefix-only
+          expression: resource.name.startsWith("projects/_/buckets/${prefix}standard/objects/tmp/")
+      - role: roles/storage.legacyBucketReader
+        mode: additive
+        members: [projectEditor:${project_id}]
+
+  - name: autoclass
+    autoclass:
+      terminal_storage_class: ARCHIVE
+    website:
+      main_page_suffix: index.html
+
+  - name: hns
+    hierarchical_namespace: true
+    iam:
+      - role: roles/storage.objectUser
+        mode: additive
+        service_accounts: [${service_agent}]

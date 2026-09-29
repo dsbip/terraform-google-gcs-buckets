@@ -1,0 +1,15 @@
+# Same buckets and bindings as order-a.yaml, listed in a different order.
+defaults:
+  location: US
+buckets:
+  - name: fixture-second
+    iam:
+      - role: roles/storage.objectCreator
+        members: [serviceAccount:writer@my-project.iam.gserviceaccount.com]
+  - name: fixture-first
+    iam:
+      - role: roles/storage.objectAdmin
+        mode: additive
+        members: [user:backup@example.com, user:admin@example.com]
+      - role: roles/storage.objectViewer
+        members: [group:readers@example.com]

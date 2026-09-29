@@ -1,0 +1,25 @@
+defaults:
+  location: US
+buckets:
+  - name: fixture-lifecycle
+    lifecycle_rules:
+      - action:
+          type: SetStorageClass
+          storage_class: NEARLINE
+        condition:
+          age: 30
+          with_state: LIVE
+          matches_storage_class: [STANDARD]
+      - action:
+          type: Delete
+        condition:
+          age: 0
+          num_newer_versions: 0
+          days_since_noncurrent_time: 0
+          days_since_custom_time: 0
+          created_before: 2024-01-01
+      - action:
+          type: Delete
+        condition:
+          size_above_bytes: 1073741824
+          matches_prefix: [tmp/]

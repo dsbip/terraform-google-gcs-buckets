@@ -1,0 +1,9 @@
+# Two unrelated mistakes: both must be reported in one plan error, and no
+# resource may be planned.
+buckets:
+  - name: Invalid_Name
+    location: US
+  - name: valid-but-missing-location
+    iam:
+      - role: roles/storage.objectViewer
+        members: [alice@example.com]

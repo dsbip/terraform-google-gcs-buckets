@@ -1,0 +1,3 @@
+buckets:
+  - name: fixture-minimal
+    location: us-central1

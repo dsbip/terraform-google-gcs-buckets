@@ -1,0 +1,189 @@
+# Every option the module supports, including each kind of IAM principal.
+# See CLAUDE.md for the schema reference.
+#
+# Bucket names are global across all of Cloud Storage; change them before
+# applying. Replace my-project / 123456789012 with your project ID / number.
+
+# Top-level keys starting with "x-" are ignored by the module. Use them to
+# hold YAML anchors that several buckets reuse.
+x-abort-stale-uploads: &abort-stale-uploads
+  action:
+    type: AbortIncompleteMultipartUpload
+  condition:
+    age: 7
+
+# Settings inherited by every bucket unless the bucket sets the same key.
+# `labels` are merged (bucket labels win); every other key is replaced.
+defaults:
+  location: EU
+  storage_class: STANDARD
+  uniform_bucket_level_access: true
+  public_access_prevention: enforced
+  versioning: false
+  force_destroy: false
+  soft_delete_retention_seconds: 604800 # 7 days (the GCS default)
+  labels:
+    managed-by: terraform
+    cost-center: "cc-1234"
+  lifecycle_rules:
+    - *abort-stale-uploads
+
+buckets:
+  # ---------------------------------------------------------------------------
+  # Business data: versioning, CMEK, retention, access logs, storage tiering,
+  # delete protection and every principal kind.
+  # ---------------------------------------------------------------------------
+  - name: example-complete-data
+    location: US-CENTRAL1
+    versioning: true
+    kms_key_name: projects/my-project/locations/us-central1/keyRings/storage/cryptoKeys/gcs-data
+    retention_policy:
+      retention_period: 86400 # seconds; objects can't be deleted for 1 day
+      is_locked: false # locking is irreversible
+    logging:
+      log_bucket: example-complete-logs
+      log_object_prefix: data/
+    # Terraform refuses to destroy this bucket. Set DELETE before destroying.
+    deletion_policy: PREVENT
+    labels:
+      data-classification: confidential
+    lifecycle_rules:
+      - *abort-stale-uploads
+      - action:
+          type: SetStorageClass
+          storage_class: NEARLINE
+        condition:
+          age: 30
+          matches_storage_class: [STANDARD]
+      - action:
+          type: SetStorageClass
+          storage_class: COLDLINE
+        condition:
+          age: 90
+          matches_storage_class: [NEARLINE]
+      - action:
+          type: Delete
+        condition:
+          num_newer_versions: 3
+          with_state: ARCHIVED
+      - action:
+          type: Delete
+        condition:
+          days_since_noncurrent_time: 30
+      - action:
+          type: Delete
+        condition:
+          age: 0 # zero is sent to the API, so every matching object qualifies
+          matches_prefix: [tmp/]
+          matches_suffix: [.tmp]
+    iam:
+      # Authoritative (the default mode): these become the only members of
+      # the role on this bucket.
+      - role: roles/storage.objectViewer
+        members:
+          - user:alice@example.com
+          - group:data-readers@example.com
+          - serviceAccount:reporting@my-project.iam.gserviceaccount.com
+          - domain:example.com
+          - projectViewer:my-project
+          - principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.repository/example-org/data-pipelines
+      # Shorthand lists: the user:/group:/serviceAccount:/domain: prefix is
+      # added automatically.
+      - role: roles/storage.objectUser
+        users: [bob@example.com]
+        groups: [data-engineers@example.com]
+        service_accounts: [etl@my-project.iam.gserviceaccount.com]
+      # Additive: grants the member without taking ownership of the role.
+      - role: roles/storage.legacyBucketReader
+        mode: additive
+        members:
+          - principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/my-project.svc.id.goog/subject/ns/analytics/sa/reader
+      # Time-bound access (IAM conditions need uniform bucket-level access).
+      - role: roles/storage.objectViewer
+        groups: [contractors@example.com]
+        condition:
+          title: expires-2027
+          description: Contractor access until the end of 2026
+          expression: request.time < timestamp("2027-01-01T00:00:00Z")
+      # Prefix-scoped write access, additive.
+      - role: roles/storage.objectCreator
+        mode: additive
+        service_accounts: [ingest@my-project.iam.gserviceaccount.com]
+        condition:
+          title: incoming-prefix-only
+          expression: resource.name.startsWith("projects/_/buckets/example-complete-data/objects/incoming/")
+
+  # ---------------------------------------------------------------------------
+  # Access-log destination: Autoclass moves idle objects to colder classes.
+  # ---------------------------------------------------------------------------
+  - name: example-complete-logs
+    autoclass:
+      enabled: true
+      terminal_storage_class: ARCHIVE
+    iam:
+      # Cloud Storage writes usage logs as this Google group.
+      - role: roles/storage.objectCreator
+        groups: [cloud-storage-analytics@google.com]
+
+  # ---------------------------------------------------------------------------
+  # Public static website. allUsers needs public access prevention off
+  # ("inherited"), which the module refuses to combine with "enforced".
+  # ---------------------------------------------------------------------------
+  - name: example-complete-site
+    location: US
+    public_access_prevention: inherited
+    website:
+      main_page_suffix: index.html
+      not_found_page: 404.html
+    cors:
+      - origin: ["https://www.example.com"]
+        method: [GET, HEAD]
+        response_header: [Content-Type]
+        max_age_seconds: 3600
+    iam:
+      - role: roles/storage.objectViewer
+        members: [allUsers]
+
+  # ---------------------------------------------------------------------------
+  # Public dataset: any signed-in Google account can read, readers pay for
+  # egress and operations.
+  # ---------------------------------------------------------------------------
+  - name: example-complete-public-datasets
+    location: US
+    public_access_prevention: inherited
+    requester_pays: true
+    iam:
+      - role: roles/storage.objectViewer
+        members: [allAuthenticatedUsers]
+
+  # ---------------------------------------------------------------------------
+  # Configurable dual-region with turbo replication.
+  # ---------------------------------------------------------------------------
+  - name: example-complete-dual-region
+    location: US
+    data_locations: [US-EAST1, US-WEST1]
+    rpo: ASYNC_TURBO
+
+  # ---------------------------------------------------------------------------
+  # Hierarchical namespace (folders) for analytics and AI workloads, with soft
+  # delete turned off.
+  # ---------------------------------------------------------------------------
+  - name: example-complete-hns
+    location: US-CENTRAL1
+    hierarchical_namespace: true
+    soft_delete_retention_seconds: 0
+    iam:
+      - role: roles/storage.objectUser
+        service_accounts: [training@my-project.iam.gserviceaccount.com]
+
+  # ---------------------------------------------------------------------------
+  # Compliance archive: per-object retention and event-based holds.
+  # `lifecycle_rules: []` opts this bucket out of the rules in defaults.
+  # ---------------------------------------------------------------------------
+  - name: example-complete-compliance
+    storage_class: ARCHIVE
+    enable_object_retention: true
+    default_event_based_hold: true
+    lifecycle_rules: []
+    labels:
+      retention: long-term

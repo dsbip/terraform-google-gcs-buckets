@@ -1,0 +1,46 @@
+# One file for every environment.
+#
+# The module renders this file with Terraform's templatefile() before parsing
+# it, so it can use the values passed in config_vars (env, project_id,
+# location and teams, see main.tf): placeholders, conditionals and loops.
+# Directives sit on their own lines; the blank lines they leave behind are
+# harmless in YAML.
+#
+# Every name below gets name_prefix ("acme-dev-" or "acme-prod-") prepended.
+
+defaults:
+  location: ${location}
+  versioning: ${env == "prod"}
+  force_destroy: ${env != "prod"}
+  labels:
+    env: ${env}
+    managed-by: terraform
+
+buckets:
+  - name: app-data
+    deletion_policy: ${env == "prod" ? "PREVENT" : "DELETE"}
+%{ if env == "prod" }
+    retention_policy:
+      retention_period: 604800
+%{ endif }
+    iam:
+      - role: roles/storage.objectUser
+        service_accounts:
+          - app@${project_id}.iam.gserviceaccount.com
+      - role: roles/storage.objectViewer
+        groups:
+          - app-${env}-readers@example.com
+
+  # One scratch bucket per team.
+%{ for team in teams }
+  - name: ${team}-scratch
+    lifecycle_rules:
+      - action:
+          type: Delete
+        condition:
+          age: ${env == "prod" ? 30 : 7}
+    iam:
+      - role: roles/storage.objectUser
+        groups:
+          - ${team}@example.com
+%{ endfor }

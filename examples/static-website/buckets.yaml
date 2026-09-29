@@ -1,0 +1,50 @@
+# A public static website plus the private bucket that holds its build
+# artefacts. The site is deployed from GitHub Actions through Workload
+# Identity Federation, so no service account key is involved.
+#
+# Public access needs `public_access_prevention: inherited`; the module
+# rejects allUsers/allAuthenticatedUsers on a bucket where it is enforced.
+# An organization policy (constraints/storage.publicAccessPrevention or
+# iam.allowedPolicyMemberDomains) can still block public access.
+
+defaults:
+  location: US
+  labels:
+    managed-by: terraform
+    app: marketing-site
+
+buckets:
+  - name: example-site-www
+    public_access_prevention: inherited
+    website:
+      main_page_suffix: index.html
+      not_found_page: 404.html
+    cors:
+      - origin: ["https://www.example.com", "https://example.com"]
+        method: [GET, HEAD, OPTIONS]
+        response_header: [Content-Type, Cache-Control]
+        max_age_seconds: 3600
+    iam:
+      # Anyone on the internet can read the site.
+      - role: roles/storage.objectViewer
+        members: [allUsers]
+      # The deploy workflow of one repository (and only its main branch,
+      # through the attribute mapping of the pool) can publish.
+      - role: roles/storage.objectUser
+        members:
+          - principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.repository/example-org/marketing-site
+      # Web developers can inspect what is deployed.
+      - role: roles/storage.legacyBucketReader
+        groups: [web-developers@example.com]
+
+  - name: example-site-artifacts
+    versioning: true
+    lifecycle_rules:
+      - action:
+          type: Delete
+        condition:
+          age: 90
+    iam:
+      - role: roles/storage.objectUser
+        members:
+          - principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.repository/example-org/marketing-site

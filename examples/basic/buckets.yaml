@@ -1,0 +1,35 @@
+# Minimal configuration: two buckets and a few role bindings.
+#
+# Anything not set here uses the module defaults: STANDARD storage class,
+# uniform bucket-level access on, public access prevention enforced,
+# versioning off and force_destroy off.
+# Bucket names are global across all of Cloud Storage; change them before
+# applying.
+
+defaults:
+  location: US-CENTRAL1
+  labels:
+    managed-by: terraform
+
+buckets:
+  - name: example-basic-uploads
+    versioning: true
+    iam:
+      - role: roles/storage.objectViewer
+        groups:
+          - app-readers@example.com
+      - role: roles/storage.objectCreator
+        service_accounts:
+          - uploader@my-project.iam.gserviceaccount.com
+
+  - name: example-basic-exports
+    storage_class: NEARLINE
+    lifecycle_rules:
+      - action:
+          type: Delete
+        condition:
+          age: 30
+    iam:
+      - role: roles/storage.objectUser
+        members:
+          - serviceAccount:exporter@my-project.iam.gserviceaccount.com

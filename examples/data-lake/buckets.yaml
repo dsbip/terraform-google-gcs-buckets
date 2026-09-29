@@ -1,0 +1,125 @@
+# A medallion-style data lake: landing -> bronze -> silver -> gold, plus an
+# archive. Each layer has its own lifecycle and its own readers/writers.
+# The IAM entries shared by several buckets are YAML anchors kept under
+# "x-" keys, which the module ignores.
+
+x-platform-admins: &platform-admins
+  role: roles/storage.admin
+  groups: [gcp-platform-admins@example.com]
+
+x-data-engineers-read: &data-engineers-read
+  role: roles/storage.objectViewer
+  groups: [data-engineers@example.com]
+
+defaults:
+  location: EUROPE-WEST1
+  versioning: true
+  labels:
+    managed-by: terraform
+    domain: data-lake
+  lifecycle_rules:
+    # Keep at most two old versions of any object, for at most 30 days.
+    - action:
+        type: Delete
+      condition:
+        num_newer_versions: 2
+        with_state: ARCHIVED
+    - action:
+        type: Delete
+      condition:
+        days_since_noncurrent_time: 30
+
+buckets:
+  # Files dropped by source systems; processed within hours, never kept.
+  - name: example-lake-landing
+    versioning: false
+    soft_delete_retention_seconds: 0
+    labels:
+      layer: landing
+    lifecycle_rules:
+      - action:
+          type: Delete
+        condition:
+          age: 7
+      - action:
+          type: AbortIncompleteMultipartUpload
+        condition:
+          age: 1
+    iam:
+      - *platform-admins
+      # Partners upload through a dedicated service account...
+      - role: roles/storage.objectCreator
+        service_accounts: [partner-sftp@my-data-project.iam.gserviceaccount.com]
+      # ...and the ingestion job moves the files away.
+      - role: roles/storage.objectUser
+        service_accounts: [ingestion@my-data-project.iam.gserviceaccount.com]
+
+  # Raw copies of everything that was ingested.
+  - name: example-lake-bronze
+    labels:
+      layer: bronze
+    retention_policy:
+      retention_period: 2592000 # 30 days
+    iam:
+      - *platform-admins
+      - *data-engineers-read
+      - role: roles/storage.objectUser
+        service_accounts: [ingestion@my-data-project.iam.gserviceaccount.com]
+
+  # Cleaned, conformed data.
+  - name: example-lake-silver
+    labels:
+      layer: silver
+    iam:
+      - *platform-admins
+      - *data-engineers-read
+      # One entry can mix shorthand lists and full member strings.
+      - role: roles/storage.objectUser
+        service_accounts: [transform@my-data-project.iam.gserviceaccount.com]
+        members:
+          # Spark jobs on GKE authenticate with Workload Identity.
+          - principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/my-data-project.svc.id.goog/subject/ns/spark/sa/spark-jobs
+
+  # Business-ready data for BI tools and analysts.
+  - name: example-lake-gold
+    labels:
+      layer: gold
+    iam:
+      - *platform-admins
+      - role: roles/storage.objectViewer
+        groups: [data-engineers@example.com, analysts@example.com]
+        domains: [partner.example.org]
+      - role: roles/storage.objectUser
+        service_accounts: [transform@my-data-project.iam.gserviceaccount.com]
+      # Additive: a BI team grants its own tooling elsewhere too.
+      - role: roles/storage.objectViewer
+        mode: additive
+        service_accounts: [looker@bi-project.iam.gserviceaccount.com]
+        condition:
+          title: reports-prefix
+          expression: resource.name.startsWith("projects/_/buckets/example-lake-gold/objects/reports/")
+
+  # Long-term, rarely read copies. Autoclass cannot be mixed with
+  # SetStorageClass rules, so storage tiering here is explicit instead.
+  - name: example-lake-archive
+    storage_class: NEARLINE
+    versioning: false
+    labels:
+      layer: archive
+    lifecycle_rules:
+      - action:
+          type: SetStorageClass
+          storage_class: COLDLINE
+        condition:
+          age: 90
+          matches_storage_class: [NEARLINE]
+      - action:
+          type: SetStorageClass
+          storage_class: ARCHIVE
+        condition:
+          age: 365
+          matches_storage_class: [COLDLINE]
+    iam:
+      - *platform-admins
+      - role: roles/storage.objectCreator
+        service_accounts: [archiver@my-data-project.iam.gserviceaccount.com]
